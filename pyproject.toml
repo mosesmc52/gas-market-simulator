@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "gas-market-simulator"
+version = "0.1.0"
+description = ""
+authors = ["Moses McCall <mosesmc52@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+simpy = "^4.1.1"
+matplotlib = "^3.10.9"
+pandas = "^3.0.2"
+jupyterlab = "^4.5.7"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
