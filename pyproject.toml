@@ -11,6 +11,8 @@ simpy = "^4.1.1"
 matplotlib = "^3.10.9"
 pandas = "^3.0.2"
 jupyterlab = "^4.5.7"
+eia-ng-client = "^0.1.4"
+scikit-learn = "^1.8.0"
 
 
 [build-system]
