@@ -29,7 +29,10 @@ import numpy as np
 import pandas as pd
 
 from eia_ng import EIAClient
-from sklearn.linear_model import LinearRegression
+try:
+    from sklearn.linear_model import LinearRegression
+except ImportError:
+    LinearRegression = None
 
 load_dotenv()
 
@@ -112,6 +115,30 @@ def _monthly_series(df: pd.DataFrame, name: str, how: str = "sum") -> pd.Series:
         out = s.resample("MS").mean()
     elif how == "last":
         out = s.resample("MS").last()
+    else:
+        raise ValueError("how must be one of: sum, mean, last")
+
+    out.name = name
+    return out.dropna()
+
+
+def _weekly_series(df: pd.DataFrame, name: str, how: str = "mean", freq: str = "W-FRI") -> pd.Series:
+    """
+    Convert an EIA dataframe with date/value into a weekly time series.
+
+    The default weekly bucket ends on Friday to line up with EIA storage releases.
+    """
+    if df.empty:
+        return pd.Series(dtype=float, name=name)
+
+    s = df.set_index("date")["value"].sort_index()
+
+    if how == "sum":
+        out = s.resample(freq).sum(min_count=1)
+    elif how == "mean":
+        out = s.resample(freq).mean()
+    elif how == "last":
+        out = s.resample(freq).last()
     else:
         raise ValueError("how must be one of: sum, mean, last")
 
@@ -257,6 +284,58 @@ def load_latest_weekly_storage_release(config: CalibrationConfig) -> Dict[str, A
         "storage_bcf": float(latest["storage_bcf"]),
         "storage_change_bcf": None if pd.isna(storage_change) else float(storage_change),
     }
+
+
+def load_weekly_storage_history(config: CalibrationConfig) -> pd.DataFrame:
+    """
+    Load weekly EIA storage history for the configured storage region.
+
+    Returns a dataframe indexed by release date with:
+      - storage_bcf
+      - storage_change_bcf
+    """
+    client = EIAClient(api_key=config.api_key or os.getenv("EIA_API_KEY"))
+    ng = client.natural_gas
+
+    storage_rows = ng.storage(start=config.start, region=config.storage_region)
+    storage_raw = _to_frame(storage_rows)
+    if config.end:
+        storage_raw = storage_raw.loc[storage_raw["date"] <= pd.to_datetime(config.end)].copy()
+    if storage_raw.empty:
+        raise ValueError("No weekly EIA storage history available for the requested window.")
+
+    storage_raw = storage_raw.sort_values("date").copy()
+    storage_series = pd.Series(storage_raw["value"].to_numpy(), index=storage_raw["date"], name="storage_bcf")
+    storage_series = _maybe_mmcf_to_bcf(storage_series, storage_raw)
+    weekly = storage_series.to_frame()
+    weekly.index = pd.to_datetime(weekly.index)
+    weekly.index.name = "date"
+    weekly["storage_change_bcf"] = weekly["storage_bcf"].diff()
+    return weekly
+
+
+def load_weekly_price_history(config: CalibrationConfig) -> pd.DataFrame:
+    """
+    Load weekly Henry Hub spot price history from daily EIA spot prices.
+
+    Returns a dataframe indexed by week-ending Friday with:
+      - henry_hub_price
+    """
+    client = EIAClient(api_key=config.api_key or os.getenv("EIA_API_KEY"))
+    ng = client.natural_gas
+
+    price_rows = ng.spot_prices(start=config.start)
+    price_raw = _to_frame(price_rows)
+    if config.end:
+        price_raw = price_raw.loc[price_raw["date"] <= pd.to_datetime(config.end)].copy()
+    if price_raw.empty:
+        raise ValueError("No weekly EIA price history available for the requested window.")
+
+    weekly_price = _weekly_series(price_raw, "henry_hub_price", how="mean")
+    weekly = weekly_price.to_frame()
+    weekly.index = pd.to_datetime(weekly.index)
+    weekly.index.name = "date"
+    return weekly
 
 
 # -----------------------------
@@ -413,6 +492,26 @@ def latest_weekly_storage_release(
     """Convenience wrapper for the latest weekly EIA storage release."""
     config = CalibrationConfig(start=start, end=end, **kwargs)
     return load_latest_weekly_storage_release(config)
+
+
+def weekly_storage_history(
+    start: str = "2018-01",
+    end: Optional[str] = None,
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """Convenience wrapper for weekly EIA storage history."""
+    config = CalibrationConfig(start=start, end=end, **kwargs)
+    return load_weekly_storage_history(config)
+
+
+def weekly_price_history(
+    start: str = "2018-01",
+    end: Optional[str] = None,
+    **kwargs: Any,
+) -> pd.DataFrame:
+    """Convenience wrapper for weekly Henry Hub spot price history."""
+    config = CalibrationConfig(start=start, end=end, **kwargs)
+    return load_weekly_price_history(config)
 
 
 # -----------------------------

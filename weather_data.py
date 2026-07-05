@@ -377,6 +377,49 @@ def daily_to_monthly_weather(
     return monthly
 
 
+def daily_to_weekly_weather(
+    weather_daily: pd.DataFrame,
+    value_method: str = "median",
+    freq: str = "W-FRI",
+) -> pd.DataFrame:
+    """
+    Convert daily regional weather to weekly HDD/CDD.
+
+    HDD/CDD are summed across days in each week. Temperature is averaged.
+    """
+    if value_method not in {"median", "mean"}:
+        raise ValueError("value_method must be 'median' or 'mean'")
+
+    df = weather_daily.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["week"] = df["date"].dt.to_period(freq).apply(lambda p: p.end_time.normalize())
+
+    hdd_col = f"hdd_{value_method}"
+    cdd_col = f"cdd_{value_method}"
+    tavg_f_col = f"tavg_f_{value_method}"
+    tavg_c_col = f"tavg_c_{value_method}"
+
+    required = ["region_id", "week", hdd_col, cdd_col, tavg_f_col, tavg_c_col, "n_stations_used"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise KeyError(f"weather_daily missing columns: {missing}")
+
+    weekly = (
+        df.groupby(["region_id", "week"], as_index=False)
+        .agg(
+            hdd=(hdd_col, "sum"),
+            cdd=(cdd_col, "sum"),
+            tavg_f=(tavg_f_col, "mean"),
+            tavg_c=(tavg_c_col, "mean"),
+            n_weather_days=("date", "nunique"),
+            avg_stations_used=("n_stations_used", "mean"),
+        )
+        .rename(columns={"week": "date"})
+        .sort_values(["region_id", "date"])
+    )
+    return weekly
+
+
 def build_region_weather_daily(
     stations_csv: str,
     region: str = "all",
@@ -465,6 +508,33 @@ def merge_weather_into_monthly_panel(
     wx = wx.loc[wx["region_id"] == region].copy()
     if wx.empty:
         raise ValueError(f"No weather rows found for region={region!r}")
+
+    keep = ["date", "hdd", "cdd", "tavg_f", "tavg_c", "n_weather_days", "avg_stations_used"]
+    wx = wx[keep].drop_duplicates(subset=["date"]).set_index("date").sort_index()
+    wx = wx.rename(columns={"hdd": hdd_col_name, "cdd": cdd_col_name})
+
+    return panel.join(wx, how="left")
+
+
+def merge_weather_into_weekly_panel(
+    weekly_panel: pd.DataFrame,
+    weather_weekly: pd.DataFrame,
+    region: str = "lower_48",
+    hdd_col_name: str = "hdd",
+    cdd_col_name: str = "cdd",
+) -> pd.DataFrame:
+    """
+    Merge weekly HDD/CDD into a weekly panel indexed by week-ending date.
+    """
+    panel = weekly_panel.copy()
+    panel.index = pd.to_datetime(panel.index)
+    panel.index.name = "date"
+
+    wx = weather_weekly.copy()
+    wx["date"] = pd.to_datetime(wx["date"])
+    wx = wx.loc[wx["region_id"] == region].copy()
+    if wx.empty:
+        raise ValueError(f"No weekly weather rows found for region={region!r}")
 
     keep = ["date", "hdd", "cdd", "tavg_f", "tavg_c", "n_weather_days", "avg_stations_used"]
     wx = wx[keep].drop_duplicates(subset=["date"]).set_index("date").sort_index()
