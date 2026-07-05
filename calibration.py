@@ -222,6 +222,43 @@ def load_eia_monthly_panel(config: CalibrationConfig) -> pd.DataFrame:
     return panel
 
 
+def load_latest_weekly_storage_release(config: CalibrationConfig) -> Dict[str, Any]:
+    """
+    Load the latest weekly EIA storage release for the configured storage region.
+
+    Returns a dict with:
+      - release_date: pandas.Timestamp
+      - storage_bcf: float
+      - storage_change_bcf: Optional[float]
+    """
+    client = EIAClient(api_key=config.api_key or os.getenv("EIA_API_KEY"))
+    ng = client.natural_gas
+
+    storage_rows = ng.storage(start=config.start, region=config.storage_region)
+    storage_raw = _to_frame(storage_rows)
+
+    if config.end:
+        storage_raw = storage_raw.loc[storage_raw["date"] <= pd.to_datetime(config.end)].copy()
+
+    if storage_raw.empty:
+        raise ValueError("No weekly EIA storage data available for the requested window.")
+
+    storage_raw = storage_raw.sort_values("date").reset_index(drop=True)
+    storage_series = pd.Series(storage_raw["value"].to_numpy(), index=storage_raw["date"], name="storage_bcf")
+    storage_series = _maybe_mmcf_to_bcf(storage_series, storage_raw)
+    storage_raw["storage_bcf"] = storage_series.to_numpy()
+    storage_raw["storage_change_bcf"] = storage_raw["storage_bcf"].diff()
+
+    latest = storage_raw.iloc[-1]
+    storage_change = latest["storage_change_bcf"]
+
+    return {
+        "release_date": pd.Timestamp(latest["date"]),
+        "storage_bcf": float(latest["storage_bcf"]),
+        "storage_change_bcf": None if pd.isna(storage_change) else float(storage_change),
+    }
+
+
 # -----------------------------
 # Calibration logic
 # -----------------------------
@@ -366,6 +403,16 @@ def calibrate_reference_scenario(
     monthly = load_eia_monthly_panel(config)
     scenario = calibrate_from_monthly_panel(monthly, config)
     return scenario, monthly
+
+
+def latest_weekly_storage_release(
+    start: str = "2018-01",
+    end: Optional[str] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Convenience wrapper for the latest weekly EIA storage release."""
+    config = CalibrationConfig(start=start, end=end, **kwargs)
+    return load_latest_weekly_storage_release(config)
 
 
 # -----------------------------
